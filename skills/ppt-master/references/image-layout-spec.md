@@ -1,174 +1,222 @@
-> See shared-standards.md for common technical constraints.
+> See [`svg-image-embedding.md`](./svg-image-embedding.md) for SVG image syntax and crop-policy enforcement.
 
-# Image Layout Specification (Mandatory)
+# Image Layout Specification
 
-Layout rules for pages containing images. Both the Strategist planning phase and Executor generation phase must follow these rules.
+Neutral geometry and review rules for every image placement. This file calculates the selected composition; it never chooses a resource, pattern, or automatic left/right or top/bottom layout.
 
-**Core principle: Calculate layout based on the image's original aspect ratio, ensuring the image is displayed completely without excess whitespace or cropping.**
-
----
-
-## Layout Decision Flow
-
-```
-1. Get image original dimensions → Calculate ratio (width/height)
-2. Select layout type based on ratio
-3. Calculate maximum display size for the image
-4. Allocate remaining space for text area
-5. Fill results into the Design Specification's image resource list
-```
-
-**When to execute**: If the image approach includes "B) User-provided", after the Strategist completes the Eight Confirmations and before content analysis and outlining, the scan must be run and the image resource list populated.
+**When to run**: whenever an image will be placed. Use the current page composition to select its region first, then apply the relevant single-item, adjacent, overlay, or multi-item calculation below.
 
 ---
 
-## Layout Type Selection (Mandatory)
+## 1. Ownership and Inputs
 
-| Image Ratio | Layout Type | Image Position | Description |
-|-------------|-------------|----------------|-------------|
-| > 2.0 (ultra-wide) | Top-bottom split | Top full-width | Image spans canvas width, height proportional |
-| 1.5-2.0 (wide) | Top-bottom split | Top | Image width = content area width, height proportional |
-| 1.2-1.5 (standard) | Left-right split | Left | Image height-first fit, width proportional |
-| 0.8-1.2 (square) | Left-right split | Left | Image takes content area height, width proportional |
-| < 0.8 (portrait) | Left-right split | Left | Image height = content area height, width proportional |
+| Role | Owns |
+|---|---|
+| Default Strategist | Resource choice, semantic role, crop boundary, and preferred image/content or image/shape relationship |
+| Image_Generator | Composition inside each generated bitmap for its planned container |
+| Default Executor | Final SVG regions and geometry; may adapt the preferred relationship while preserving binding resource, content, and crop constraints |
+| Quick Generate main agent | The planning and realization decisions above in one active context |
 
-> Edge cases: When ratio is at a boundary (e.g., 1.5), decide based on text volume. More text → left-right; less text → top-bottom.
+This specification and [`image-layout-patterns.md`](./image-layout-patterns.md) are the always-read geometry and composition vocabulary; [`svg-image-embedding.md`](./svg-image-embedding.md) owns embedding. Default and Quick SVG authoring also load [`svg-effects.md`](./svg-effects.md) and [`native-shape-authoring.md`](./native-shape-authoring.md) before realization, so apply their contracts directly when a selected construction needs effects, preset geometry, or Boolean geometry. Other routes follow their own documented load triggers.
 
----
+### 1.1 Geometry notation
 
-## Dimension Calculation Formulas
+| Symbol | Meaning |
+|---|---|
+| `(x0, y0, W, H)` | Current selected page region |
+| `(ws, hs)` | Measured source width and height |
+| `R = ws / hs` | Source aspect ratio |
+| `Q = W / H` | Selected-region aspect ratio |
+| `g`, `gx`, `gy` | Gap between adjacent regions, columns, or rows |
+| `ax`, `ay` | Horizontal and vertical anchor fractions in `[0,1]` |
 
-### PPT 16:9 (1280x720) Canvas Parameters
-
-```
-Canvas: 1280 x 720 px
-Content area: 1160 x 640 px (left/right margin 60px, top/bottom margin 40px)
-Title area height: 60 px
-Content start: y = 80 px (title + spacing)
-```
-
-### Top-Bottom Layout Calculation
-
-```
-Image width = W = 1160 px
-Image height = W / R = 1160 / R px
-Text area height = H - image height - gap(20px)
-
-Validation: Text area height >= 150px (at least 3-4 lines of text)
-If not satisfied → Switch to left-right layout
-```
-
-### Left-Right Layout Calculation
-
-**Method 1 (height-first, suitable for portrait images)**:
-```
-Image height = H = 600 px
-Image width = H x R = 600 x R px
-Text area width = W - image width - gap(20px)
-```
-
-**Method 2 (width-constrained, for wide images converted to left-right)**:
-```
-Image width = W x 0.7 = 812 px
-Image height = image width / R
-Text area width = W - image width - gap(20px)
-```
-
-**Validation**: Text area width >= 280px; otherwise reduce image area width.
+All dimensions must be finite and positive. Derive `R` from current measured source data rather than a requested or previously planned size.
 
 ---
 
-## Layout Examples
+## 2. Aspect-Ratio Placement
 
-### Ultra-wide Image (ratio 2.45)
+### 2.1 Contain
 
-```
-Original: 1960x800, R=2.45 → Top-bottom split
-Image: 1160x473, Text area: 1160x147 → 7:3 top-bottom
+Contain keeps the complete source visible inside `(W,H)`:
+
+```text
+if R >= Q:
+    w = W
+    h = W / R
+else:
+    h = H
+    w = H × R
+
+x = x0 + ax × (W - w)
+y = y0 + ay × (H - h)
 ```
 
-### Standard Landscape (ratio 1.38)
+Centered contain uses `ax = ay = 0.5`. SVG realization normally maps this to a legal `meet` anchor.
 
-```
-Original: 1614x1171, R=1.38 → Left-right split
-Image: 773x560 (left), Text area: 367x560 (right) → 7:3 left-right
+### 2.2 Fill
+
+Fill covers `(W,H)` without distortion and crops overflow:
+
+```text
+if R >= Q:
+    h = H
+    w = H × R
+else:
+    w = W
+    h = W / R
+
+overflow_x = w - W
+overflow_y = h - H
+x = x0 - ax × overflow_x
+y = y0 - ay × overflow_y
 ```
 
-### Wide Image Edge Case (ratio 1.75)
+Centered fill uses `ax = ay = 0.5`. SVG realization normally maps this to a legal `slice` anchor. Use fill only when the active crop boundary permits the computed loss and the anchor protects the declared focal content.
 
-```
-Original: 1820x1040, R=1.75
-Try top-bottom: image height=663, text area=-43 ❌
-Switch to left-right: image 780x446 (left), text area 360x600 (right) → 7:3 left-right
-```
+### 2.3 Mode selection
+
+| Need | Geometry |
+|---|---|
+| Complete source, evidence, or edge content | Contain |
+| Region coverage with a focal-safe crop | Fill |
+| Complete source plus a detail view | One contain placement plus a separately justified crop |
+| Irregular or repeated source windows | Apply the selected region math first, then load the owning crop/shape reference |
 
 ---
 
-## Prohibited Practices
+## 3. Single Image
 
-| Prohibited | Correct Approach |
-|-----------|-----------------|
-| Fixed 50:50 or arbitrary ratios | Dynamic calculation based on image ratio |
-| Forcing wide image into square container | Use top-bottom layout or increase image area width |
-| Placing portrait image in narrow horizontal strip | Use left-right layout, image on left |
-| Image whitespace exceeding 10% | Recalculate layout or choose alternative approach |
-| Cropping key image content | Use `preserveAspectRatio="xMidYMid meet"` |
-| Text area too small to read | Ensure text area >= 150px (top-bottom) or >= 280px (left-right) |
+Place a standalone item by applying §2 to its selected region. The region itself comes from the page hierarchy; source ratio determines the item geometry inside it, not the page structure.
 
----
+For an item adjacent to another region, divide only the available selected region. Let `q_item` and `q_other` be positive visual weights for the image and the other content.
 
-## SVG Image Embedding Code
+### 3.1 Horizontal adjacency
 
-### Complete Display (recommended for data charts)
-
-```xml
-<image href="../images/xxx.png"
-       x="60" y="80" width="780" height="446"
-       preserveAspectRatio="xMidYMid meet"/>
+```text
+available = W - g
+item_width  = available × q_item / (q_item + q_other)
+other_width = available - item_width
 ```
 
-### Crop-to-Fill (backgrounds only)
+Both regions use height `H`. Place either region first according to the selected composition; no fixed share is implied.
 
-```xml
-<image href="../images/bg.png"
-       x="0" y="0" width="1280" height="720"
-       preserveAspectRatio="xMidYMid slice"/>
+### 3.2 Vertical adjacency
+
+```text
+available = H - g
+item_height  = available × q_item / (q_item + q_other)
+other_height = available - item_height
 ```
 
----
+Both regions use width `W`. Place either region first according to the selected composition.
 
-## Image Resource List Template
+### 3.3 Overlay and inset
 
-In the Design Specification & Content Outline, the image resource list must include:
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| Filename | Image filename | `p12_0.png` |
-| Original dimensions | Width x Height | 1524x968 |
-| Ratio | Width / Height | 1.57 |
-| Page | Usage page number | Page 5 |
-| Type | Visual type | Background / Photography / Illustration / Diagram / Decorative |
-| Layout plan | Top-bottom/Left-right + split ratio | Top-bottom 6:4 or Left-right 7:3 |
-| Image area | Image display dimensions | 1160x420 or 780x446 |
-| Text area | Remaining space dimensions | 1160x200 or 360x600 |
-
-**The Type field is used by Image_Generator to select the appropriate prompt strategy.**
+An overlay keeps the image region and overlay region independently measurable. An inset selects a child region `(xi, yi, Wi, Hi)` inside the current region, then reapplies §2 using the same source ratio. Do not derive either region from an assumed percentage; size it from the actual hierarchy, copy, focal content, and required separation.
 
 ---
 
-## Automation Tool
+## 4. Multiple Images
 
-```bash
-python3 scripts/analyze_images.py <project_path>/images
+### 4.1 Equal grid
+
+For `c` columns and `r` rows:
+
+```text
+cell_width  = (W - (c - 1) × gx) / c
+cell_height = (H - (r - 1) × gy) / r
+
+cell_x(col) = x0 + col × (cell_width + gx)
+cell_y(row) = y0 + row × (cell_height + gy)
 ```
 
-Output includes dimensions, ratios, and layout recommendations (Markdown table), which can be directly used to populate the image resource list.
+Use equal cells when peer comparison is the message. Apply contain or fill independently to each source within its cell.
+
+### 4.2 Weighted tracks
+
+For column weights `u[1]…u[c]` and row weights `v[1]…v[r]`:
+
+```text
+available_width  = W - (c - 1) × gx
+available_height = H - (r - 1) × gy
+
+column_width[j] = available_width  × u[j] / sum(u)
+row_height[k]   = available_height × v[k] / sum(v)
+```
+
+Use weighted tracks when one item is primary. A spanning item receives the sum of its tracks plus the internal gaps it crosses.
+
+### 4.3 Free multi-item composition
+
+**Mandatory**: For montage, arc, overlap, or another non-grid arrangement, give
+every carrier a finite center and positive size, give every intended overlap an
+unambiguous front item, and verify the visible union against `(W,H)`.
+
+**Default — shared direction (may override when deliberate disorder serves the
+communication job)**: Select one direction generator and derive related carriers
+from shared geometry. An override still declares a bounded placement/angle rule
+so disorder is authored rather than accidental. Use the following state:
+
+| State | Definition |
+|---|---|
+| `p[i] = (cx[i], cy[i])` | Explicit center of item `i` |
+| `(w[i], h[i])` | Explicit positive carrier size |
+| `s[i] > 0` | Optional shared size rhythm: `(w[i], h[i]) = s[i] × (w0, h0)` |
+| `P` (optional) | Parent contour controlling the outer silhouette, shared seam, reveal, or attachment path |
+| `V[i]` | Visible carrier after applying its clip and, when `P` is a silhouette, intersecting it with `P` |
+| `z[i]` | Stacking rank required for carriers that overlap |
+
+For a straight shared direction `θ`, calculate centers in its local frame:
+
+```text
+d = (cos(θ), sin(θ))
+n = (-sin(θ), cos(θ))
+p[i] = p0 + t[i] × d + e[i] × n
+```
+
+Choose `t[i]` and transverse offset `e[i]` as explicit sequences; add `s[i]`
+when scale carries the rhythm. Reuse a progression when rhythm is intended; do
+not substitute unrelated per-item values.
+
+| Generator | Executable rule |
+|---|---|
+| `vector` | Use the straight-frame equation with ordered `t[i]`; set `t[i+1] = t[i] + advance[i]`, where each `advance[i] > 0`. Control overlap through `advance[i]`, not an accidental negative gap. |
+| `shared-baseline` | Choose baseline `B(t) = b + t × d`. If `r[i]` is the carrier's half-extent along `n`, place `p[i] = B(t[i]) + r[i] × n`; this keeps one carrier edge on the same baseline while sizes vary. |
+| `curve-spine` | Choose ordered parameters `u[i]` on `C(u)` with `||C'(u[i])|| > 0`. Set `d[i] = normalize(C'(u[i]))`, `n[i] = (-d[i].y, d[i].x)`, and `p[i] = C(u[i]) + e[i] × n[i]`; at a zero derivative, use the secant between nearest distinct samples or another generator. |
+| `panel` | Define one convex 2D quadrilateral `A,B,C,D` in consistent winding and `F(u,v) = (1-u)(1-v)A + u(1-v)B + uvC + (1-u)vD`. Split monotone `u`/`v` intervals; each cell uses its four `F` corners. |
+
+For each intended overlap, calculate `area(V[i] ∩ V[j]) > 0` and assign the
+front item through `z[i]` and `z[j]`. `P` must visibly control at least one
+listed structural role; otherwise use the selected region boundary and omit it.
+
+**Reference — not a constraint**: Use one of these angle mechanisms according to the selected composition:
+
+| Mechanism | Geometry |
+|---|---|
+| Clip-shape angle | Keep the bitmap upright and angle only the carrier contour or clip path. |
+| Parent-group rotation | Build the complete arrangement first, then rotate its carriers, frames, and attached labels together around one pivot. |
+| Tangent rotation | On `curve-spine`, rotate item `i` around `p[i]` by `atan2(d[i].y, d[i].x)` when the carriers should follow the path. |
+
+**Forbidden — unsupported image deformation**: Do not use shear, skew, or true perspective mapping. A `panel` is a set of 2D quadrilateral clips/crops; it does not warp the image plane.
 
 ---
 
-## Role Responsibilities
+## 5. Composition Checks
 
-| Role | Responsibility |
-|------|---------------|
-| **Strategist** | Run analyze_images.py, calculate layout per this spec, populate image resource list |
-| **Executor** | Strictly follow the layout plan and dimensions in the image resource list when generating SVGs |
+| Check | Required response |
+|---|---|
+| Computed width or height is non-positive | Re-select the page regions or reduce gaps |
+| Contain leaves unusable residual space | Recompose the surrounding regions; do not stretch the source |
+| Fill removes focal or required content | Change anchor, enlarge the region, or use contain |
+| Adjacent text/content region cannot carry its material | Reweight or change the selected relationship |
+| Equal cells imply equality that the content does not have | Use weighted tracks or a free composition |
+| Peer images use inconsistent visual scale without meaning | Normalize their regions or make the hierarchy explicit |
+| A free carrier lacks an explicit center or positive size, or an intended overlap lacks stacking order | Supply the missing geometry or z-order before drawing |
+| Items intended as one system lack both a shared direction and a deliberate-disorder rule | Derive them from one vector, baseline, curve, panel, or bounded override |
+| Per-item angles vary without a shared direction or deliberate-disorder rule | Use one parent-group angle, a shared clip-shape direction, curve tangents, or a bounded angle rhythm |
+| The parent contour does not affect silhouette, seam, reveal, or attachment | Remove it or reconstruct the carriers from that contour |
+| A panel depends on shear, skew, or perspective warping | Replace it with 2D quadrilateral carriers and focal-safe crops |
+| Gaps, alignments, or overlaps drift without purpose | Recalculate from the shared region and gap values |
+
+The final geometry must express the active page hierarchy, preserve the selected resource relationships, and remain valid under the conditionally loaded technical contracts.
